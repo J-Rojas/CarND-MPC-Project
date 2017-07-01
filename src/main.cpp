@@ -98,8 +98,10 @@ int main() {
           * Both are in between [-1, 1].
           *
           */
-          double steer_value;
-          double throttle_value;
+          double steer_value = 0;
+          double throttle_value = 0.1;
+          double n_waypoints = 20;
+          double dist_per_waypoint = 5;
 
           json msgJson;
           // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
@@ -123,6 +125,23 @@ int main() {
 
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
+
+          for (int i = 0; i < ptsx.size(); i++) {
+            auto x = ptsx[i] - px;
+            auto y = ptsy[i] - py;
+            ptsx[i] = cos(-psi) * x - sin(-psi) * y;
+            ptsy[i] = sin(-psi) * x + cos(-psi) * y;
+          }
+
+          Eigen::VectorXd xIntp = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(ptsx.data(), ptsx.size());
+          Eigen::VectorXd yIntp = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(ptsy.data(), ptsy.size());
+          Eigen::VectorXd polyWaypoints = polyfit(xIntp, yIntp, 3);
+
+          for (int i = 0; i < n_waypoints; i++) {
+            auto x = i * dist_per_waypoint;
+            next_x_vals.push_back(x);
+            next_y_vals.push_back(polyeval(polyWaypoints, x));
+          }
 
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;

@@ -6,6 +6,18 @@
 
 using namespace std;
 
+double polyeval(Eigen::VectorXd coeffs, double x);
+Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals, int order);
+Eigen::VectorXd polyderv(Eigen::VectorXd coeffs);
+
+class Solution {
+public:
+    double steering;
+    double throttle;
+    vector<double> x;
+    vector<double> y;
+};
+
 class MPC {
  public:
   MPC();
@@ -14,7 +26,7 @@ class MPC {
 
   // Solve the model given an initial state and polynomial coefficients.
   // Return the first actuatotions.
-  vector<double> Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs);
+  Solution Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs);
 };
 
 #endif /* MPC_H */

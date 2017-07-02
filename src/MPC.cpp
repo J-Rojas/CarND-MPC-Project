@@ -2,12 +2,13 @@
 #include <cppad/cppad.hpp>
 #include <cppad/ipopt/solve.hpp>
 #include "Eigen-3.3/Eigen/Core"
+#include "Eigen-3.3/Eigen/QR"
 
 using CppAD::AD;
 
 // TODO: Set the timestep length and duration
-size_t N = 50;
-double dt = 0.05;
+size_t N = 25;
+double dt = 0.1;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -23,7 +24,7 @@ const double Lf = 2.67;
 
 // Both the reference cross track and orientation errors are 0.
 // The reference velocity is set to 40 mph.
-double ref_v = 40;
+double ref_v = 10;
 
 // The solver takes all the state variables and actuator
 // variables in a singular vector. Thus, we should to establish
@@ -37,11 +38,65 @@ size_t epsi_start = cte_start + N;
 size_t delta_start = epsi_start + N;
 size_t a_start = delta_start + N - 1;
 
+// Evaluate a polynomial.
+double polyeval(Eigen::VectorXd coeffs, double x) {
+	double result = 0.0;
+	for (int i = 0; i < coeffs.size(); i++) {
+		result += coeffs[i] * pow(x, i);
+	}
+	return result;
+}
+
+AD<double> polyevalAD(Eigen::VectorXd coeffs, AD<double> x) {
+	AD<double> result = 0.0;
+	for (int i = 0; i < coeffs.size(); i++) {
+		result += coeffs[i] * CppAD::pow(x, i);
+	}
+	return result;
+}
+
+// Generate the derivative coefficients of a polynomial.
+Eigen::VectorXd polyderv(Eigen::VectorXd coeffs) {
+	Eigen::VectorXd dCoeffs(coeffs.size() - 1);
+	for (int i = 1; i < coeffs.size(); i++) {
+		dCoeffs(i-1) = coeffs[i] * i;
+	}
+	return dCoeffs;
+}
+
+// Fit a polynomial.
+// Adapted from
+// https://github.com/JuliaMath/Polynomials.jl/blob/master/src/Polynomials.jl#L676-L716
+Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
+                        int order) {
+	assert(xvals.size() == yvals.size());
+	assert(order >= 1 && order <= xvals.size() - 1);
+	Eigen::MatrixXd A(xvals.size(), order + 1);
+
+	for (int i = 0; i < xvals.size(); i++) {
+		A(i, 0) = 1.0;
+	}
+
+	for (int j = 0; j < xvals.size(); j++) {
+		for (int i = 0; i < order; i++) {
+			A(j, i + 1) = A(j, i) * xvals(j);
+		}
+	}
+
+	auto Q = A.householderQr();
+	auto result = Q.solve(yvals);
+	return result;
+}
+
 class FG_eval {
  public:
   // Fitted polynomial coefficients
   Eigen::VectorXd coeffs;
-  FG_eval(Eigen::VectorXd coeffs) { this->coeffs = coeffs; }
+	Eigen::VectorXd deriv;
+  FG_eval(Eigen::VectorXd coeffs) {
+		this->coeffs = coeffs;
+		this->deriv = polyderv(coeffs);
+	}
 
   typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
   void operator()(ADvector& fg, const ADvector& vars) {
@@ -107,8 +162,8 @@ class FG_eval {
       AD<double> delta0 = vars[delta_start + t - 1];
       AD<double> a0 = vars[a_start + t - 1];
 
-      AD<double> f0 = coeffs[0] + coeffs[1] * x0;
-      AD<double> psides0 = CppAD::atan(coeffs[1]);
+      AD<double> f0 = polyevalAD(this->coeffs, x0);
+      AD<double> psides0 = polyevalAD(this->deriv, x0); //XXX update
 
       // Here's `x` to get you started.
       // The idea here is to constraint this value to be 0.
@@ -127,7 +182,7 @@ class FG_eval {
       fg[1 + cte_start + t] =
               cte1 - ((f0 - y0) + (v0 * CppAD::sin(epsi0) * dt));
       fg[1 + epsi_start + t] =
-              epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt);
+              epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt); //XXX update
     }
   }
 };
@@ -138,7 +193,7 @@ class FG_eval {
 MPC::MPC() {}
 MPC::~MPC() {}
 
-vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
+Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   size_t i;
   typedef CPPAD_TESTVECTOR(double) Dvector;
 
@@ -158,7 +213,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // Initial value of the independent variables.
   // Should be 0 except for the initial values.
   Dvector vars(n_vars);
-  for (int i = 0; i < n_vars; i++) {
+  for (i = 0; i < n_vars; i++) {
     vars[i] = 0.0;
   }
   // Set the initial variable values
@@ -175,7 +230,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
 
   // Set all non-actuators upper and lowerlimits
   // to the max negative and positive values.
-  for (int i = 0; i < delta_start; i++) {
+  for (i = 0; i < delta_start; i++) {
     vars_lowerbound[i] = -1.0e19;
     vars_upperbound[i] = 1.0e19;
   }
@@ -183,14 +238,14 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // The upper and lower limits of delta are set to -25 and 25
   // degrees (values in radians).
   // NOTE: Feel free to change this to something else.
-  for (int i = delta_start; i < a_start; i++) {
+  for (i = delta_start; i < a_start; i++) {
     vars_lowerbound[i] = -0.436332;
     vars_upperbound[i] = 0.436332;
   }
 
   // Acceleration/decceleration upper and lower limits.
   // NOTE: Feel free to change this to something else.
-  for (int i = a_start; i < n_vars; i++) {
+  for (i = a_start; i < n_vars; i++) {
     vars_lowerbound[i] = -1.0;
     vars_upperbound[i] = 1.0;
   }
@@ -200,7 +255,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // state indices.
   Dvector constraints_lowerbound(n_constraints);
   Dvector constraints_upperbound(n_constraints);
-  for (int i = 0; i < n_constraints; i++) {
+  for (i = 0; i < n_constraints; i++) {
     constraints_lowerbound[i] = 0;
     constraints_upperbound[i] = 0;
   }
@@ -237,7 +292,7 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   options += "Sparse  true        reverse\n";
   // NOTE: Currently the solver has a maximum time limit of 0.5 seconds.
   // Change this as you see fit.
-  options += "Numeric max_cpu_time          0.5\n";
+  options += "Numeric max_cpu_time          0.09\n";
 
   // place to return solution
   CppAD::ipopt::solve_result<Dvector> solution;
@@ -260,10 +315,15 @@ vector<double> MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   //
   // {...} is shorthand for creating a vector, so auto x1 = {1.0,2.0}
   // creates a 2 element double vector.
-  return {
-    solution.x[x_start + 1],   solution.x[y_start + 1],
-    solution.x[psi_start + 1], solution.x[v_start + 1],
-    solution.x[cte_start + 1], solution.x[epsi_start + 1],
-    solution.x[delta_start],   solution.x[a_start]
-  };
+
+	Solution retval;
+	retval.steering = solution.x[delta_start];
+	retval.throttle = solution.x[a_start];
+
+	for (i = 0; i < N; i++) {
+		retval.x.push_back(solution.x[x_start + i]);
+		retval.y.push_back(solution.x[y_start + i]);
+	}
+
+  return retval;
 }

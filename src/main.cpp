@@ -5,7 +5,6 @@
 #include <thread>
 #include <vector>
 #include "Eigen-3.3/Eigen/Core"
-#include "Eigen-3.3/Eigen/QR"
 #include "MPC.h"
 #include "json.hpp"
 
@@ -30,39 +29,6 @@ string hasData(string s) {
     return s.substr(b1, b2 - b1 + 2);
   }
   return "";
-}
-
-// Evaluate a polynomial.
-double polyeval(Eigen::VectorXd coeffs, double x) {
-  double result = 0.0;
-  for (int i = 0; i < coeffs.size(); i++) {
-    result += coeffs[i] * pow(x, i);
-  }
-  return result;
-}
-
-// Fit a polynomial.
-// Adapted from
-// https://github.com/JuliaMath/Polynomials.jl/blob/master/src/Polynomials.jl#L676-L716
-Eigen::VectorXd polyfit(Eigen::VectorXd xvals, Eigen::VectorXd yvals,
-                        int order) {
-  assert(xvals.size() == yvals.size());
-  assert(order >= 1 && order <= xvals.size() - 1);
-  Eigen::MatrixXd A(xvals.size(), order + 1);
-
-  for (int i = 0; i < xvals.size(); i++) {
-    A(i, 0) = 1.0;
-  }
-
-  for (int j = 0; j < xvals.size(); j++) {
-    for (int i = 0; i < order; i++) {
-      A(j, i + 1) = A(j, i) * xvals(j);
-    }
-  }
-
-  auto Q = A.householderQr();
-  auto result = Q.solve(yvals);
-  return result;
 }
 
 int main() {
@@ -101,23 +67,9 @@ int main() {
           double steer_value = 0;
           double throttle_value = 0.1;
           double n_waypoints = 20;
+	        int n_poly_degree = 3;
           double dist_per_waypoint = 5;
-
           json msgJson;
-          // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
-          // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-          msgJson["steering_angle"] = steer_value;
-          msgJson["throttle"] = throttle_value;
-
-          //Display the MPC predicted trajectory 
-          vector<double> mpc_x_vals;
-          vector<double> mpc_y_vals;
-
-          //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
-          // the points in the simulator are connected by a Green line
-
-          msgJson["mpc_x"] = mpc_x_vals;
-          msgJson["mpc_y"] = mpc_y_vals;
 
           //Display the waypoints/reference line
           vector<double> next_x_vals;
@@ -126,6 +78,7 @@ int main() {
           //.. add (x,y) points to list here, points are in reference to the vehicle's coordinate system
           // the points in the simulator are connected by a Yellow line
 
+	        // the waypoints are transformed wrt to the vehicle's coordinate system
           for (int i = 0; i < ptsx.size(); i++) {
             auto x = ptsx[i] - px;
             auto y = ptsy[i] - py;
@@ -135,7 +88,7 @@ int main() {
 
           Eigen::VectorXd xIntp = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(ptsx.data(), ptsx.size());
           Eigen::VectorXd yIntp = Eigen::Map<Eigen::VectorXd, Eigen::Unaligned>(ptsy.data(), ptsy.size());
-          Eigen::VectorXd polyWaypoints = polyfit(xIntp, yIntp, 3);
+          Eigen::VectorXd polyWaypoints = polyfit(xIntp, yIntp, n_poly_degree);
 
           for (int i = 0; i < n_waypoints; i++) {
             auto x = i * dist_per_waypoint;
@@ -146,8 +99,41 @@ int main() {
           msgJson["next_x"] = next_x_vals;
           msgJson["next_y"] = next_y_vals;
 
+	        // the initial cte is the value of f(0) for the waypoint polynomial equation
+	        auto cte = polyeval(polyWaypoints, 0);
+          auto deriv = polyderv(polyWaypoints);
 
-          auto msg = "42[\"steer\"," + msgJson.dump() + "]";
+          //std::cout << "Poly waypoints: " << polyWaypoints << std::endl;
+          //std::cout << "Poly deriv: " << deriv << std::endl;
+
+	        // the initial epsi is the arctan(f'(0)) for the waypoint polynomial equation
+	        auto epsi = atan(polyeval(deriv, 0));
+
+	        Eigen::VectorXd state(6);
+          //the waypoints have been converted to local vehicle coordinates so
+          // x = 0, y = 0, and psi is 0 because it represents the current vehicle heading
+	        state << 0, 0, 0, v, cte, epsi;
+
+          std::cout << "State: " << state << std::endl;
+
+	        auto solution = mpc.Solve(state, polyWaypoints);
+
+          //Display the MPC predicted trajectory
+          msgJson["mpc_x"] = solution.x;
+          msgJson["mpc_y"] = solution.y;
+
+	        // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
+	        // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
+	        steer_value = solution.steering / deg2rad(25);
+	        throttle_value = solution.throttle;
+
+          std::cout << "steer_value: " << steer_value << std::endl;
+          std::cout << "throttle_value: " << throttle_value << std::endl;
+
+	        msgJson["steering_angle"] = steer_value * -1; //steering is inverted
+	        msgJson["throttle"] = throttle_value;
+
+	        auto msg = "42[\"steer\"," + msgJson.dump() + "]";
           std::cout << msg << std::endl;
           // Latency
           // The purpose is to mimic real driving conditions where
@@ -158,7 +144,7 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          this_thread::sleep_for(chrono::milliseconds(100));
+          //XXX this_thread::sleep_for(chrono::milliseconds(100));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {

@@ -109,17 +109,8 @@ int main() {
 	        Eigen::VectorXd state(8);
           //the waypoints have been converted to local vehicle coordinates so
           // x = 0, y = 0, and psi is 0 because it represents the current vehicle heading
-
+          // wrt the vehicle coordinate system
 	        state << 0, 0, 0, v, cte, epsi, - steering, throttle;
-
-          /*
-	        state[0] = v * cos(0) * 0.1;
-	        state[1] = v * sin(0) * 0.1;
-	        state[2] = (v / 2.67) * -steering * 0.1;
-	        state[3] = v + throttle * 0.1;
-	        state[4] = cte + v*sin(epsi)*0.1;
-	        state[5] = epsi + (v / 2.67) * -steering * 0.1;
-          */
 
           std::cout << "State: " << state << std::endl;
 
@@ -141,7 +132,6 @@ int main() {
 		        throttle_value = 0;
 		        std::cout << "invalid solution " << std::endl;
 	        }
-
 
 	        msgJson["steering_angle"] = steer_value * -1; //steering is inverted
 	        msgJson["throttle"] = throttle_value;

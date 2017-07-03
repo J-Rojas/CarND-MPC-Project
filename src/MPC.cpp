@@ -6,23 +6,87 @@
 
 using CppAD::AD;
 
+/* WRITE UP */
+
+/* Student describes their model in detail. This includes the state, actuators and update equations.
+
+// My model uses these variables:
+// x, y for position
+// psi for orientation angle
+// v for velocity
+// cte for the cross track error
+// epsi for the orientation angle error
+// delta for the orientation angle change per time step
+// a for the change in velocity per time step
+
+// The accuators used in the model include:
+// steering - the delta value used to turn the car
+// throttle - the a value used to accelerate/decelerate
+
+// I've include the current 'delta' and 'a' in the variables so that the solver function can use them for potentially
+// modeling the latency.
+
+// These update equations account for the change in various states of the vehicle
+   (position, orientation, velocity, cte and epsi) after each timestep. This values
+	 are updated through the Solver routine.
+
+// x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
+// y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
+// psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
+// v_[t+1] = v[t] + a[t] * dt
+// cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt
+// epsi[t+1] = psi[t] - psides[t] + v[t] * delta[t] / Lf * dt
+
+// The solver routine uses a gradient descent algorithm to find the best path through
+// the environment using the model equations above along with constraints on the
+// state variables and accuators. The best path is determined by minimizing the cost
+// function of this model and its constraints. See the FG_Eval class for this implementation.
+
+*/
+
+/* Student discusses the reasoning behind the chosen N (timestep length) and dt
+   (elapsed duration between timesteps) values. Additionally the student details
+	 the previous values tried. */
+
 // I choose N to be fairly low to avoid convergence problems with the linear equation solver. The higher the N value, the
 // higher the unknown variables that will need to be solved. Also, it's not useful to have a high N since the environment
 // could change within a short period of time.
 //
-// dt was set to 0.25 to give the model enough flexible to adjust actuators quickly but also high enough to model some
-// of the latency period. By setting dt > 2 * the latency, the model will partially compensate for the state of the car
-// during the latency period.
-//
-// See below for more unsuccessful attempts at modeling latency.
+// dt was set to 0.1 to give the model enough flexible to adjust actuators quickly but also high enough to model some
+// of the latency period. By increasing the timestep length, more of the latency period is accounted for in the
+// path planning, however it will lead to less smooth motion. Decreasing the timestep below the latency period
+// does not offer any benefit because the model would never change an accuator before this time period has elapsed.
 //
 // I tried higher values such as N=25 and lower values of dt = 0.1. The higher N values cause convergence problems with
 // the linear system solver - even with constraints in place, the solver would diverge and produce non-optimal solution.
-// So instead I kept the N low along with the speed to maintain good performance.
-// I found these number below to be adequate for modeling turns at a reasonable speed (< 40 mph).
+// I found these number below to be adequate for modeling turns at a reasonable highway speed (<= 65 mph).
 size_t N = 7;
 double dt = 0.1;
 int latency_steps = 1;
+
+/* A polynomial is fitted to waypoints. */
+
+// The polynomial fitting code can be found in main(). I transformed the waypoints provided by the system
+// from global coordinates to vehicle coordinates by rotating the points by the psi angle around the
+// vehicle's current position.
+// This transformations allows the model to fit a polynomial to these points so that the calculation
+// of the CTE is simpler; the CTE would be modeled simply as CTE = f(x) - car_y, where f(x) is the polynomial
+// of the waypoints.
+// I used a 3rd order polynomial to model a smoother curve around sharp corners - for example, the inner curve
+// of the lake track.
+// The x, y, and psi values are set to 0 within the initial state because the path planning is all done
+// within the vehicle coordinate system, and the vehicle at it's intial state at the current time will be at
+// the origin (0,0) with 0 orientation. The simulated states will be calculated based on this origin.
+
+/* The student implements Model Predictive Control that handles a 100 millisecond latency.
+   Student provides details on how they deal with latency. */
+
+// I accounted for the latency by initializing the initial vehicle state with the outcome of maintaining
+// the current steering delta and acceleration across the current vehicle state for the latency period.
+// This would result in the model considering this future state as the starting point for vehiles accutations
+// within the path planning optimization problem. Without this, the car would oversteer and oscilate across the
+// lane center line.
+// See the implementation within the Solve() method.
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -182,14 +246,6 @@ class FG_eval {
       AD<double> psides0 = CppAD::atan(polyevalAD(this->deriv, x0));
 
       // Here are the update equations for the model.
-	    // These equations account for the change in position, orientation, velocity, cte and epsi after each timestep.
-
-      // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
-      // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
-      // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
-      // v_[t+1] = v[t] + a[t] * dt
-      // cte[t+1] = f(x[t]) - y[t] + v[t] * sin(epsi[t]) * dt
-      // epsi[t+1] = psi[t] - psides[t] + v[t] * delta[t] / Lf * dt
       fg[1 + x_start + t] = x1 - (x0 + v0 * CppAD::cos(psi0) * dt);
       fg[1 + y_start + t] = y1 - (y0 + v0 * CppAD::sin(psi0) * dt);
       fg[1 + psi_start + t] = psi1 - (psi0 + v0 * delta0 / Lf * dt);
@@ -234,16 +290,6 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
     vars[i] = 0.0;
   }
   // Set the initial variable values
-
-	// My model uses these variables:
-	// x, y for position
-	// psi for orientation angle
-	// v for velocity
-	// cte for the cross track error
-	// epsi for the orientation angle error
-	// delta for the orientation angle change per time step
-	// a for the change in velocity per time step
-
 	vars[x_start] = x;
 	vars[y_start] = y;
 	vars[psi_start] = psi;
@@ -253,25 +299,17 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
 	vars[delta_start] = steering;
 	vars[a_start] = throttle;
 
-	// I attempted to model latency by constraining the initial state by X number of time steps (depending on the dt setting)/
-	// Unforunately this didn't appear to work properly. I choose a simpler approach by making the dt value larger than the latency period.
-	// Having a high dt will not work well for high speeds, so I would have to get the code below to work to attempt high
-	// speed MPC.
+	// Latency compensation - adjust the initial state(s) by assuming the current steering and throttle
+	// are maintained during the latency period (dt * latency_steps).
 
 	auto derivCoeffs = polyderv(coeffs);
 	for (i = 0; i < latency_steps; i++) {
-		/*vars[cte_start] = polyeval(coeffs, vars[x_start]) - vars[y_start] + vars[v_start] * sin(vars[epsi_start]) * dt;
-		vars[epsi_start] = (vars[psi_start] - atan(polyeval(derivCoeffs, vars[x_start]))) + vars[v_start] * steering / Lf * dt;
-		vars[x_start] += vars[v_start] * cos(vars[psi_start]) * dt;
-		vars[y_start] += vars[v_start] * sin(vars[psi_start]) * dt;
-		vars[psi_start] += vars[v_start] * steering / Lf * dt;
-		vars[v_start] += throttle * dt;*/
-		vars[x_start] = v * cos(0) * dt;
-		vars[y_start] = v * sin(0) * dt;
-		vars[psi_start] = (v / Lf) * steering * dt;
-		vars[v_start] = v + throttle * dt;
-		vars[cte_start] = cte + v * sin(epsi) * dt;
-		vars[epsi_start] = epsi + (v / Lf) * steering * dt;
+		cte = vars[cte_start + i] = polyeval(coeffs, x) - y + v * sin(epsi) * dt;
+		epsi = vars[epsi_start + i] = (psi - atan(polyeval(derivCoeffs, x))) + v * steering / Lf * dt;
+		x = vars[x_start + i] = x + v * cos(psi) * dt;
+		y = vars[y_start + i] = y + v * sin(psi) * dt;
+		psi = vars[psi_start + i] = psi + v * steering / Lf * dt;
+		v = vars[v_start + i] = v + throttle * dt;
 	}
 
   // Lower and upper limits for x
@@ -325,19 +363,22 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
     constraints_lowerbound[i] = 0;
     constraints_upperbound[i] = 0;
   }
-  constraints_lowerbound[x_start] = vars[x_start];
-  constraints_lowerbound[y_start] = vars[y_start];
-  constraints_lowerbound[psi_start] = vars[psi_start];
-  constraints_lowerbound[v_start] = vars[v_start];
-  constraints_lowerbound[cte_start] = vars[cte_start];
-  constraints_lowerbound[epsi_start] = vars[epsi_start];
 
-  constraints_upperbound[x_start] = vars[x_start];
-  constraints_upperbound[y_start] = vars[y_start];
-  constraints_upperbound[psi_start] = vars[psi_start];
-  constraints_upperbound[v_start] = vars[v_start];
-  constraints_upperbound[cte_start] = vars[cte_start];
-  constraints_upperbound[epsi_start] = vars[epsi_start];
+	for (i = 0; i < latency_steps; i++) {
+	  constraints_lowerbound[x_start + i] = x;
+	  constraints_lowerbound[y_start + i] = y;
+	  constraints_lowerbound[psi_start + i] = psi;
+	  constraints_lowerbound[v_start + i] = v;
+	  constraints_lowerbound[cte_start + i] = cte;
+	  constraints_lowerbound[epsi_start + i] = epsi;
+
+	  constraints_upperbound[x_start + i] = x;
+	  constraints_upperbound[y_start + i] = y;
+	  constraints_upperbound[psi_start + i] = psi;
+	  constraints_upperbound[v_start + i] = v;
+	  constraints_upperbound[cte_start + i] = cte;
+	  constraints_upperbound[epsi_start + i] = epsi;
+	}
 
   // Object that computes objective and constraints
   FG_eval fg_eval(coeffs);

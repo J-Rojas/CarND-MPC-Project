@@ -11,11 +11,6 @@
 // for convenience
 using json = nlohmann::json;
 
-// For converting back and forth between radians and degrees.
-constexpr double pi() { return M_PI; }
-double deg2rad(double x) { return x * pi() / 180; }
-double rad2deg(double x) { return x * 180 / pi(); }
-
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 // else the empty string "" will be returned.
@@ -57,6 +52,8 @@ int main() {
           double py = j[1]["y"];
           double psi = j[1]["psi"];
           double v = j[1]["speed"];
+	        double throttle = j[1]["throttle"];
+	        double steering = j[1]["steering_angle"];
 
           /*
           * TODO: Calculate steering angle and throttle using MPC.
@@ -66,7 +63,7 @@ int main() {
           */
           double steer_value = 0;
           double throttle_value = 0.1;
-          double n_waypoints = 20;
+          double n_waypoints = 100;
 	        int n_poly_degree = 3;
           double dist_per_waypoint = 5;
           json msgJson;
@@ -91,7 +88,7 @@ int main() {
           Eigen::VectorXd polyWaypoints = polyfit(xIntp, yIntp, n_poly_degree);
 
           for (int i = 0; i < n_waypoints; i++) {
-            auto x = i * dist_per_waypoint;
+            auto x = (i - (n_waypoints / 2)) * dist_per_waypoint;
             next_x_vals.push_back(x);
             next_y_vals.push_back(polyeval(polyWaypoints, x));
           }
@@ -109,10 +106,10 @@ int main() {
 	        // the initial epsi is the arctan(f'(0)) for the waypoint polynomial equation
 	        auto epsi = atan(polyeval(deriv, 0));
 
-	        Eigen::VectorXd state(6);
+	        Eigen::VectorXd state(8);
           //the waypoints have been converted to local vehicle coordinates so
           // x = 0, y = 0, and psi is 0 because it represents the current vehicle heading
-	        state << 0, 0, 0, v, cte, epsi;
+	        state << 0, 0, 0, v, cte, epsi, steering, throttle;
 
           std::cout << "State: " << state << std::endl;
 
@@ -124,11 +121,17 @@ int main() {
 
 	        // NOTE: Remember to divide by deg2rad(25) before you send the steering value back.
 	        // Otherwise the values will be in between [-deg2rad(25), deg2rad(25] instead of [-1, 1].
-	        steer_value = solution.steering / deg2rad(25);
-	        throttle_value = solution.throttle;
+	        if (solution.status) {
+		        steer_value = solution.steering / deg2rad(25);
+		        throttle_value = solution.throttle;
+		        std::cout << "steer_value: " << steer_value << std::endl;
+		        std::cout << "throttle_value: " << throttle_value << std::endl;
+	        } else {
+		        steer_value = 0;
+		        throttle_value = 0;
+		        std::cout << "invalid solution " << std::endl;
+	        }
 
-          std::cout << "steer_value: " << steer_value << std::endl;
-          std::cout << "throttle_value: " << throttle_value << std::endl;
 
 	        msgJson["steering_angle"] = steer_value * -1; //steering is inverted
 	        msgJson["throttle"] = throttle_value;
@@ -144,7 +147,7 @@ int main() {
           //
           // NOTE: REMEMBER TO SET THIS TO 100 MILLISECONDS BEFORE
           // SUBMITTING.
-          //XXX this_thread::sleep_for(chrono::milliseconds(100));
+          this_thread::sleep_for(chrono::milliseconds(100));
           ws.send(msg.data(), msg.length(), uWS::OpCode::TEXT);
         }
       } else {

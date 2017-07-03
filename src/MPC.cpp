@@ -6,9 +6,23 @@
 
 using CppAD::AD;
 
-// TODO: Set the timestep length and duration
-size_t N = 25;
-double dt = 0.1;
+// I choose N to be fairly low to avoid convergence problems with the linear equation solver. The higher the N value, the
+// higher the unknown variables that will need to be solved. Also, it's not useful to have a high N since the environment
+// could change within a short period of time.
+//
+// dt was set to 0.25 to give the model enough flexible to adjust actuators quickly but also high enough to model some
+// of the latency period. By setting dt > 2 * the latency, the model will partially compensate for the state of the car
+// during the latency period.
+//
+// See below for more unsuccessful attempts at modeling latency.
+//
+// I tried higher values such as N=25 and lower values of dt = 0.1. The higher N values cause convergence problems with
+// the linear system solver - even with constraints in place, the solver would diverge and produce non-optimal solution.
+// So instead I kept the N low along with the speed to maintain good performance.
+// I found these number below to be adequate for modeling turns at a reasonable speed (< 40 mph).
+size_t N = 5;
+double dt = 0.25;
+int latency_steps = 0;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -23,8 +37,8 @@ double dt = 0.1;
 const double Lf = 2.67;
 
 // Both the reference cross track and orientation errors are 0.
-// The reference velocity is set to 40 mph.
-double ref_v = 10;
+// The reference velocity is set to 30 mph.
+double ref_v = 30;
 
 // The solver takes all the state variables and actuator
 // variables in a singular vector. Thus, we should to establish
@@ -96,6 +110,8 @@ class FG_eval {
   FG_eval(Eigen::VectorXd coeffs) {
 		this->coeffs = coeffs;
 		this->deriv = polyderv(coeffs);
+	  std::cout << "Polynomial coeffs: " << this->coeffs << std::endl;
+	  std::cout << "Polynomial deriv: " << this->deriv << std::endl;
 	}
 
   typedef CPPAD_TESTVECTOR(AD<double>) ADvector;
@@ -113,14 +129,14 @@ class FG_eval {
 
     // Minimize the use of actuators.
     for (int t = 0; t < N - 1; t++) {
-      fg[0] += CppAD::pow(vars[delta_start + t], 2);
+      fg[0] += 10 * CppAD::pow(vars[delta_start + t], 2);
       fg[0] += CppAD::pow(vars[a_start + t], 2);
     }
 
     // Minimize the value gap between sequential actuations.
     for (int t = 0; t < N - 2; t++) {
-      fg[0] += CppAD::pow(vars[delta_start + t + 1] - vars[delta_start + t], 2);
-      fg[0] += CppAD::pow(vars[a_start + t + 1] - vars[a_start + t], 2);
+      fg[0] += 10 * CppAD::pow((vars[delta_start + t + 1] - vars[delta_start + t]), 2);
+      fg[0] += 10 * CppAD::pow((vars[a_start + t + 1] - vars[a_start + t]), 2);
     }
 
     //
@@ -163,12 +179,11 @@ class FG_eval {
       AD<double> a0 = vars[a_start + t - 1];
 
       AD<double> f0 = polyevalAD(this->coeffs, x0);
-      AD<double> psides0 = polyevalAD(this->deriv, x0); //XXX update
+      AD<double> psides0 = polyevalAD(this->deriv, x0);
 
-      // Here's `x` to get you started.
-      // The idea here is to constraint this value to be 0.
-      //
-      // Recall the equations for the model:
+      // Here are the update equations for the model.
+	    // These equations account for the change in position, orienation, velocity, cte and epsi after each timestep.
+
       // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
       // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
       // psi_[t+1] = psi[t] + v[t] / Lf * delta[t] * dt
@@ -180,9 +195,9 @@ class FG_eval {
       fg[1 + psi_start + t] = psi1 - (psi0 + v0 * delta0 / Lf * dt);
       fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
       fg[1 + cte_start + t] =
-              cte1 - ((f0 - y0) + (v0 * CppAD::sin(epsi0) * dt));
+              cte1 - ((f0 - y0)); //I found the cte change term here to cause unnecesary shifts in the model, so I eliminated it.
       fg[1 + epsi_start + t] =
-              epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt); //XXX update
+              epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt);
     }
   }
 };
@@ -203,6 +218,8 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   double v = state[3];
   double cte = state[4];
   double epsi = state[5];
+	double steering = state[6];
+	double throttle = state[7];
 
   // number of independent variables
   // N timesteps == N - 1 actuations
@@ -217,12 +234,38 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
     vars[i] = 0.0;
   }
   // Set the initial variable values
-  vars[x_start] = x;
-  vars[y_start] = y;
-  vars[psi_start] = psi;
-  vars[v_start] = v;
-  vars[cte_start] = cte;
-  vars[epsi_start] = epsi;
+
+	// My model uses these variables:
+	// x, y for position
+	// psi for orientation angle
+	// v for velocity
+	// cte for the cross track error
+	// epsi for the orientation angle error
+	// delta for the orientation angle change per time step
+	// a for the change in velocity per time step
+
+	vars[x_start] = x;
+	vars[y_start] = y;
+	vars[psi_start] = psi;
+	vars[v_start] = v;
+	vars[cte_start] = cte;
+	vars[epsi_start] = epsi;
+	vars[delta_start] = steering;
+	vars[a_start] = throttle;
+
+	// I attempted to model latency by constraining the initial state by X number of time steps (depending on the dt setting)/
+	// Unforunately this didn't appear to work properly. I choose a simpler approach by making the dt value larger than the latency period.
+	// Having a high dt will not work well for high speeds, so I would have to get the code below to work to attempt high
+	// speed MPC.
+	auto derivCoeffs = polyderv(coeffs);
+	for (i = 0; i < latency_steps; i++) {
+		vars[x_start] += vars[v_start] * cos(vars[psi_start]) * dt;
+		vars[y_start] += vars[v_start] * sin(vars[psi_start]) * dt;
+		vars[psi_start] += vars[v_start] * steering / Lf * dt;
+		vars[v_start] += throttle * dt;
+		vars[cte_start] = polyeval(coeffs, vars[x_start]) - vars[y_start];
+		vars[epsi_start] = (psi - polyeval(derivCoeffs, vars[x_start])) + vars[v_start] * steering / Lf * dt;
+	}
 
   // Lower and upper limits for x
   Dvector vars_lowerbound(n_vars);
@@ -230,17 +273,33 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
 
   // Set all non-actuators upper and lowerlimits
   // to the max negative and positive values.
-  for (i = 0; i < delta_start; i++) {
-    vars_lowerbound[i] = -1.0e19;
-    vars_upperbound[i] = 1.0e19;
+  for (i = x_start; i < psi_start; i++) {
+    vars_lowerbound[i] = -1000;
+    vars_upperbound[i] = 1000;
   }
+	for (i = psi_start; i < v_start; i++) {
+		vars_lowerbound[i] = deg2rad(-180);
+		vars_upperbound[i] = deg2rad(180);
+	}
+	for (i = v_start; i < cte_start; i++) {
+		vars_lowerbound[i] = -100;
+		vars_upperbound[i] = 100;
+	}
+	for (i = cte_start; i < epsi_start; i++) {
+		vars_lowerbound[i] = -100;
+		vars_upperbound[i] = 100;
+	}
+	for (i = epsi_start; i < delta_start; i++) {
+		vars_lowerbound[i] = deg2rad(-180);
+		vars_upperbound[i] = deg2rad(180);
+	}
 
   // The upper and lower limits of delta are set to -25 and 25
   // degrees (values in radians).
   // NOTE: Feel free to change this to something else.
   for (i = delta_start; i < a_start; i++) {
-    vars_lowerbound[i] = -0.436332;
-    vars_upperbound[i] = 0.436332;
+    vars_lowerbound[i] = -deg2rad(18);
+    vars_upperbound[i] = deg2rad(18);
   }
 
   // Acceleration/decceleration upper and lower limits.
@@ -282,7 +341,7 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // options for IPOPT solver
   std::string options;
   // Uncomment this if you'd like more print information
-  options += "Integer print_level  0\n";
+	options += "Integer print_level  0\n";
   // NOTE: Setting sparse to true allows the solver to take advantage
   // of sparse routines, this makes the computation MUCH FASTER. If you
   // can uncomment 1 of these and see if it makes a difference or not but
@@ -292,7 +351,7 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   options += "Sparse  true        reverse\n";
   // NOTE: Currently the solver has a maximum time limit of 0.5 seconds.
   // Change this as you see fit.
-  options += "Numeric max_cpu_time          0.09\n";
+  options += "Numeric max_cpu_time          0.25\n";
 
   // place to return solution
   CppAD::ipopt::solve_result<Dvector> solution;
@@ -303,10 +362,9 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
       constraints_upperbound, fg_eval, solution);
 
   // Check some of the solution values
-  bool ok = true;
-  ok &= solution.status == CppAD::ipopt::solve_result<Dvector>::success;
+  bool ok = solution.status == CppAD::ipopt::solve_result<Dvector>::success;
 
-  // Cost
+	// Cost
   auto cost = solution.obj_value;
   std::cout << "Cost " << cost << std::endl;
 
@@ -317,12 +375,17 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
   // creates a 2 element double vector.
 
 	Solution retval;
+	retval.status = ok;
 	retval.steering = solution.x[delta_start];
 	retval.throttle = solution.x[a_start];
 
 	for (i = 0; i < N; i++) {
 		retval.x.push_back(solution.x[x_start + i]);
 		retval.y.push_back(solution.x[y_start + i]);
+	}
+
+	if (retval.steering > deg2rad(15) || retval.steering < deg2rad(-15)) {
+		printf("SHARP TURN!!!\n");
 	}
 
   return retval;

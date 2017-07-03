@@ -20,9 +20,9 @@ using CppAD::AD;
 // the linear system solver - even with constraints in place, the solver would diverge and produce non-optimal solution.
 // So instead I kept the N low along with the speed to maintain good performance.
 // I found these number below to be adequate for modeling turns at a reasonable speed (< 40 mph).
-size_t N = 5;
-double dt = 0.25;
-int latency_steps = 0;
+size_t N = 7;
+double dt = 0.1;
+int latency_steps = 1;
 
 // This value assumes the model presented in the classroom is used.
 //
@@ -37,8 +37,8 @@ int latency_steps = 0;
 const double Lf = 2.67;
 
 // Both the reference cross track and orientation errors are 0.
-// The reference velocity is set to 30 mph.
-double ref_v = 30;
+// The reference velocity is set to 70 mph.
+double ref_v = 65;
 
 // The solver takes all the state variables and actuator
 // variables in a singular vector. Thus, we should to establish
@@ -135,8 +135,8 @@ class FG_eval {
 
     // Minimize the value gap between sequential actuations.
     for (int t = 0; t < N - 2; t++) {
-      fg[0] += 10 * CppAD::pow((vars[delta_start + t + 1] - vars[delta_start + t]), 2);
-      fg[0] += 10 * CppAD::pow((vars[a_start + t + 1] - vars[a_start + t]), 2);
+      fg[0] += 1000 * CppAD::pow((vars[delta_start + t + 1] - vars[delta_start + t]), 2);
+      fg[0] += 1000 * CppAD::pow((vars[a_start + t + 1] - vars[a_start + t]), 2);
     }
 
     //
@@ -179,10 +179,10 @@ class FG_eval {
       AD<double> a0 = vars[a_start + t - 1];
 
       AD<double> f0 = polyevalAD(this->coeffs, x0);
-      AD<double> psides0 = polyevalAD(this->deriv, x0);
+      AD<double> psides0 = CppAD::atan(polyevalAD(this->deriv, x0));
 
       // Here are the update equations for the model.
-	    // These equations account for the change in position, orienation, velocity, cte and epsi after each timestep.
+	    // These equations account for the change in position, orientation, velocity, cte and epsi after each timestep.
 
       // x_[t+1] = x[t] + v[t] * cos(psi[t]) * dt
       // y_[t+1] = y[t] + v[t] * sin(psi[t]) * dt
@@ -195,7 +195,7 @@ class FG_eval {
       fg[1 + psi_start + t] = psi1 - (psi0 + v0 * delta0 / Lf * dt);
       fg[1 + v_start + t] = v1 - (v0 + a0 * dt);
       fg[1 + cte_start + t] =
-              cte1 - ((f0 - y0)); //I found the cte change term here to cause unnecesary shifts in the model, so I eliminated it.
+              cte1 - ((f0 - y0) + (v0 * CppAD::sin(epsi0) * dt));
       fg[1 + epsi_start + t] =
               epsi1 - ((psi0 - psides0) + v0 * delta0 / Lf * dt);
     }
@@ -257,14 +257,21 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
 	// Unforunately this didn't appear to work properly. I choose a simpler approach by making the dt value larger than the latency period.
 	// Having a high dt will not work well for high speeds, so I would have to get the code below to work to attempt high
 	// speed MPC.
+
 	auto derivCoeffs = polyderv(coeffs);
 	for (i = 0; i < latency_steps; i++) {
+		/*vars[cte_start] = polyeval(coeffs, vars[x_start]) - vars[y_start] + vars[v_start] * sin(vars[epsi_start]) * dt;
+		vars[epsi_start] = (vars[psi_start] - atan(polyeval(derivCoeffs, vars[x_start]))) + vars[v_start] * steering / Lf * dt;
 		vars[x_start] += vars[v_start] * cos(vars[psi_start]) * dt;
 		vars[y_start] += vars[v_start] * sin(vars[psi_start]) * dt;
 		vars[psi_start] += vars[v_start] * steering / Lf * dt;
-		vars[v_start] += throttle * dt;
-		vars[cte_start] = polyeval(coeffs, vars[x_start]) - vars[y_start];
-		vars[epsi_start] = (psi - polyeval(derivCoeffs, vars[x_start])) + vars[v_start] * steering / Lf * dt;
+		vars[v_start] += throttle * dt;*/
+		vars[x_start] = v * cos(0) * dt;
+		vars[y_start] = v * sin(0) * dt;
+		vars[psi_start] = (v / Lf) * steering * dt;
+		vars[v_start] = v + throttle * dt;
+		vars[cte_start] = cte + v * sin(epsi) * dt;
+		vars[epsi_start] = epsi + (v / Lf) * steering * dt;
 	}
 
   // Lower and upper limits for x
@@ -318,19 +325,19 @@ Solution MPC::Solve(Eigen::VectorXd state, Eigen::VectorXd coeffs) {
     constraints_lowerbound[i] = 0;
     constraints_upperbound[i] = 0;
   }
-  constraints_lowerbound[x_start] = x;
-  constraints_lowerbound[y_start] = y;
-  constraints_lowerbound[psi_start] = psi;
-  constraints_lowerbound[v_start] = v;
-  constraints_lowerbound[cte_start] = cte;
-  constraints_lowerbound[epsi_start] = epsi;
+  constraints_lowerbound[x_start] = vars[x_start];
+  constraints_lowerbound[y_start] = vars[y_start];
+  constraints_lowerbound[psi_start] = vars[psi_start];
+  constraints_lowerbound[v_start] = vars[v_start];
+  constraints_lowerbound[cte_start] = vars[cte_start];
+  constraints_lowerbound[epsi_start] = vars[epsi_start];
 
-  constraints_upperbound[x_start] = x;
-  constraints_upperbound[y_start] = y;
-  constraints_upperbound[psi_start] = psi;
-  constraints_upperbound[v_start] = v;
-  constraints_upperbound[cte_start] = cte;
-  constraints_upperbound[epsi_start] = epsi;
+  constraints_upperbound[x_start] = vars[x_start];
+  constraints_upperbound[y_start] = vars[y_start];
+  constraints_upperbound[psi_start] = vars[psi_start];
+  constraints_upperbound[v_start] = vars[v_start];
+  constraints_upperbound[cte_start] = vars[cte_start];
+  constraints_upperbound[epsi_start] = vars[epsi_start];
 
   // Object that computes objective and constraints
   FG_eval fg_eval(coeffs);
